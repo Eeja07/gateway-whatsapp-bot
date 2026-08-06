@@ -2,6 +2,7 @@ import makeWASocket, {
   useMultiFileAuthState,
   DisconnectReason,
   fetchLatestBaileysVersion,
+  makeCacheableSignalKeyStore,
   type WASocket,
 } from "@whiskeysockets/baileys";
 import { Boom } from "@hapi/boom";
@@ -40,9 +41,13 @@ class BaileysService {
 
       this.sock = makeWASocket({
         version,
-        auth: state,
+        auth: {
+          creds: state.creds,
+          keys: makeCacheableSignalKeyStore(state.keys, logger as any),
+        },
         printQRInTerminal: false,
         syncFullHistory: false,
+        markOnlineOnConnect: true,
       });
 
       this.sock.ev.on("creds.update", saveCreds);
@@ -53,8 +58,15 @@ class BaileysService {
         for (const msg of m.messages) {
           if (!msg.message) continue;
 
-          const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
-          const isCommand = text.trim().startsWith("!");
+          const text = (
+            msg.message.conversation ||
+            msg.message.extendedTextMessage?.text ||
+            msg.message.imageMessage?.caption ||
+            msg.message.videoMessage?.caption ||
+            ""
+          ).trim();
+
+          const isCommand = text.startsWith("!");
 
           // Ignore normal self-sent messages unless it is a command starting with !
           if (msg.key.fromMe && !isCommand) continue;
