@@ -22,6 +22,16 @@ class BaileysService {
   private status: ConnectionStatus = "disconnected";
   private connectedUser: string | null = null;
   private isInitializing = false;
+  private messageStore = new Map<string, any>();
+
+  private saveToMessageStore(id?: string | null, message?: any) {
+    if (!id || !message) return;
+    if (this.messageStore.size > 200) {
+      const firstKey = this.messageStore.keys().next().value;
+      if (firstKey) this.messageStore.delete(firstKey);
+    }
+    this.messageStore.set(id, message);
+  }
 
   public async init(): Promise<void> {
     if (this.isInitializing) return;
@@ -50,7 +60,10 @@ class BaileysService {
         syncFullHistory: false,
         markOnlineOnConnect: true,
         getMessage: async (key) => {
-          return { conversation: "" };
+          if (key?.id && this.messageStore.has(key.id)) {
+            return this.messageStore.get(key.id);
+          }
+          return { conversation: "Job Tracker Bot Notification" };
         },
       });
 
@@ -61,6 +74,10 @@ class BaileysService {
         if (m.type !== "notify") return;
         for (const msg of m.messages) {
           if (!msg.message) continue;
+
+          if (msg.key?.id && msg.message) {
+            this.saveToMessageStore(msg.key.id, msg.message);
+          }
 
           const text = (
             msg.message.conversation ||
@@ -75,10 +92,18 @@ class BaileysService {
           // Ignore normal self-sent messages unless it is a command starting with !
           if (msg.key.fromMe && !isCommand) continue;
 
-          let from = msg.key.remoteJid ? msg.key.remoteJid.split("@")[0] : "";
-          if (msg.key.fromMe && (from === "status" || !from)) {
-            from = this.connectedUser || from;
+          let from = "";
+          if (msg.key.remoteJid) {
+            const raw = msg.key.remoteJid.split("@")[0];
+            if (msg.key.fromMe || msg.key.remoteJid.endsWith("@lid") || raw.length > 13) {
+              from = this.connectedUser || raw;
+            } else {
+              from = raw;
+            }
+          } else {
+            from = this.connectedUser || "";
           }
+
           const pushName = msg.pushName || "User";
 
           if (text && config.webhookUrl) {
@@ -171,6 +196,10 @@ class BaileysService {
 
     const jid = this.formatJid(to);
     const sent = await this.sock.sendMessage(jid, { text: message });
+
+    if (sent?.key?.id && sent.message) {
+      this.saveToMessageStore(sent.key.id, sent.message);
+    }
 
     return {
       success: true,
