@@ -72,6 +72,7 @@ class BaileysService {
               headers: {
                 "Content-Type": "application/json",
                 "X-API-KEY": config.apiKey,
+                "User-Agent": "Mozilla/5.0 (WhatsAppGateway/1.0)",
               },
               body: JSON.stringify({
                 from,
