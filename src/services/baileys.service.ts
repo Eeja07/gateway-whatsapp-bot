@@ -95,7 +95,7 @@ class BaileysService {
           let from = "";
           if (msg.key.remoteJid) {
             const raw = msg.key.remoteJid.split("@")[0];
-            if (msg.key.fromMe || msg.key.remoteJid.endsWith("@lid") || raw.length > 13) {
+            if (msg.key.remoteJid.endsWith("@lid") || raw === "status" || !raw) {
               from = this.connectedUser || raw;
             } else {
               from = raw;
