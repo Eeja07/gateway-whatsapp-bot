@@ -41,6 +41,7 @@ class BaileysService {
 
       this.sock = makeWASocket({
         version,
+        logger: logger as any,
         auth: {
           creds: state.creds,
           keys: makeCacheableSignalKeyStore(state.keys, logger as any),
