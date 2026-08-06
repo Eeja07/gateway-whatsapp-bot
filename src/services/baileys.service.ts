@@ -79,11 +79,17 @@ class BaileysService {
             this.saveToMessageStore(msg.key.id, msg.message);
           }
 
+          let rawMsg = msg.message;
+          if (rawMsg.ephemeralMessage?.message) rawMsg = rawMsg.ephemeralMessage.message;
+          if (rawMsg.viewOnceMessage?.message) rawMsg = rawMsg.viewOnceMessage.message;
+          if (rawMsg.viewOnceMessageV2?.message) rawMsg = rawMsg.viewOnceMessageV2.message;
+
           const text = (
-            msg.message.conversation ||
-            msg.message.extendedTextMessage?.text ||
-            msg.message.imageMessage?.caption ||
-            msg.message.videoMessage?.caption ||
+            rawMsg.conversation ||
+            rawMsg.extendedTextMessage?.text ||
+            rawMsg.imageMessage?.caption ||
+            rawMsg.videoMessage?.caption ||
+            rawMsg.documentMessage?.caption ||
             ""
           ).trim();
 
