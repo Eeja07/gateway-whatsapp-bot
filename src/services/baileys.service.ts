@@ -49,6 +49,9 @@ class BaileysService {
         printQRInTerminal: false,
         syncFullHistory: false,
         markOnlineOnConnect: true,
+        getMessage: async (key) => {
+          return { conversation: "" };
+        },
       });
 
       this.sock.ev.on("creds.update", saveCreds);
