@@ -47,6 +47,35 @@ class BaileysService {
 
       this.sock.ev.on("creds.update", saveCreds);
 
+      // Listen for incoming messages and dispatch to webhook URL
+      this.sock.ev.on("messages.upsert", async (m) => {
+        if (m.type !== "notify") return;
+        for (const msg of m.messages) {
+          if (!msg.message || msg.key.fromMe) continue;
+
+          const from = msg.key.remoteJid ? msg.key.remoteJid.split("@")[0] : "";
+          const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
+          const pushName = msg.pushName || "";
+
+          if (text && config.webhookUrl) {
+            logger.info(`Incoming WA message from ${from} (${pushName}): ${text}`);
+            fetch(config.webhookUrl, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                "X-API-KEY": config.apiKey,
+              },
+              body: JSON.stringify({
+                from,
+                body: text,
+                pushName,
+                timestamp: msg.messageTimestamp,
+              }),
+            }).catch((e) => logger.error("Webhook dispatch error:", e));
+          }
+        }
+      });
+
       this.sock.ev.on("connection.update", async (update) => {
         const { connection, lastDisconnect, qr } = update;
 
