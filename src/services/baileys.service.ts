@@ -51,14 +51,22 @@ class BaileysService {
       this.sock.ev.on("messages.upsert", async (m) => {
         if (m.type !== "notify") return;
         for (const msg of m.messages) {
-          if (!msg.message || msg.key.fromMe) continue;
+          if (!msg.message) continue;
 
-          const from = msg.key.remoteJid ? msg.key.remoteJid.split("@")[0] : "";
           const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
-          const pushName = msg.pushName || "";
+          const isCommand = text.trim().startsWith("!");
+
+          // Ignore normal self-sent messages unless it is a command starting with !
+          if (msg.key.fromMe && !isCommand) continue;
+
+          let from = msg.key.remoteJid ? msg.key.remoteJid.split("@")[0] : "";
+          if (msg.key.fromMe && (from === "status" || !from)) {
+            from = this.connectedUser || from;
+          }
+          const pushName = msg.pushName || "User";
 
           if (text && config.webhookUrl) {
-            logger.info(`Incoming WA message from ${from} (${pushName}): ${text}`);
+            logger.info(`Dispatching WA message from ${from} (fromMe: ${msg.key.fromMe}): ${text}`);
             fetch(config.webhookUrl, {
               method: "POST",
               headers: {
