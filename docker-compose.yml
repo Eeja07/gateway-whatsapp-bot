@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  gateway-whatsapp-bot:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: gateway-whatsapp-bot
+    restart: always
+    ports:
+      - "3001:3001"
+    environment:
+      - PORT=3001
+      - NODE_ENV=production
+      - API_KEY=eeja_wa_gateway_secret_key_2026
+      - SESSION_DIR=/app/sessions
+    volumes:
+      - wa-sessions-data:/app/sessions
+
+volumes:
+  wa-sessions-data:
+    driver: local
