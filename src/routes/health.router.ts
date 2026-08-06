@@ -5,10 +5,12 @@ const router = Router();
 
 router.get("/health", (req, res) => {
   const status = baileysService.getStatusInfo();
+  const qrDataUrl = baileysService.getQrDataUrl();
   res.json({
     name: "gateway-whatsapp-bot",
     uptime: process.uptime(),
     ...status,
+    qrDataUrl,
   });
 });
 
