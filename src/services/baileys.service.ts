@@ -179,14 +179,14 @@ class BaileysService {
   }
 
   public formatJid(phone: string): string {
+    if (phone.includes("@s.whatsapp.net") || phone.includes("@g.us") || phone.includes("@lid")) {
+      return phone;
+    }
     let cleaned = phone.replace(/\D/g, "");
     if (cleaned.startsWith("0")) {
       cleaned = "62" + cleaned.slice(1);
     }
-    if (!cleaned.endsWith("@s.whatsapp.net")) {
-      cleaned = `${cleaned}@s.whatsapp.net`;
-    }
-    return cleaned;
+    return `${cleaned}@s.whatsapp.net`;
   }
 
   public async sendMessage(to: string, message: string): Promise<{ success: boolean; jid: string; messageId?: string }> {
