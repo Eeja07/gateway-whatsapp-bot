@@ -93,15 +93,14 @@ class BaileysService {
           if (msg.key.fromMe && !isCommand) continue;
 
           let from = "";
-          if (msg.key.remoteJid) {
-            const raw = msg.key.remoteJid.split("@")[0];
-            if (msg.key.remoteJid.endsWith("@lid") || raw === "status" || !raw) {
-              from = this.connectedUser || raw;
+          if (msg.key.fromMe) {
+            if (!msg.key.remoteJid || msg.key.remoteJid.endsWith("@lid") || msg.key.remoteJid.startsWith("status")) {
+              from = this.connectedUser || "";
             } else {
-              from = raw;
+              from = msg.key.remoteJid;
             }
           } else {
-            from = this.connectedUser || "";
+            from = msg.key.remoteJid || "";
           }
 
           const pushName = msg.pushName || "User";
