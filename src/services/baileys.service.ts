@@ -184,9 +184,15 @@ class BaileysService {
           this.status = "disconnected";
 
           if (reason === DisconnectReason.loggedOut) {
-            logger.error("WhatsApp session logged out. Clearing sessions and restarting...");
-            this.clearSession().catch((e) => logger.error("clearSession error:", e));
-            setTimeout(() => this.init(), 3000);
+            logger.error("WhatsApp session logged out. Closing socket, clearing session, then restarting...");
+            // Close socket first to release file handles before we try to delete the session folder
+            try { this.sock?.end(undefined); } catch (_) {}
+            this.sock = null;
+            // Wait for OS to release file handles, then clear and reinit
+            setTimeout(async () => {
+              await this.clearSession().catch((e) => logger.error("clearSession error:", e));
+              setTimeout(() => this.init(), 1000);
+            }, 2000);
           } else {
             logger.warn(`Connection closed due to reason: ${reason}. Reconnecting in 3s...`);
             setTimeout(() => this.init(), 3000);
