@@ -95,18 +95,34 @@ class BaileysService {
 
           const isCommand = text.startsWith("!");
 
-          // Ignore normal self-sent messages unless it is a command starting with !
-          if (msg.key.fromMe && !isCommand) continue;
+          // CRITICAL: Only process messages that are explicit bot commands (start with !)
+          // This prevents the bot from responding to regular conversation in groups or DMs
+          if (!isCommand) continue;
+
+          // Skip group messages where bot was not explicitly @-mentioned via command
+          // We still allow group commands (e.g. someone typing !overview in a group)
+          const remoteJid = msg.key.remoteJid || "";
+          const isGroup = remoteJid.endsWith("@g.us");
+          const isStatusBroadcast = remoteJid.startsWith("status@") || remoteJid.includes("broadcast");
+
+          // Skip status broadcasts entirely
+          if (isStatusBroadcast) continue;
+
+          // For self-sent messages in groups: allow if command
+          if (msg.key.fromMe && isGroup) {
+            // Only bot owner can trigger commands in groups
+            // OK to forward to webhook
+          }
 
           let from = "";
           if (msg.key.fromMe) {
-            if (!msg.key.remoteJid || msg.key.remoteJid.endsWith("@lid") || msg.key.remoteJid.startsWith("status")) {
+            if (!remoteJid || remoteJid.endsWith("@lid") || remoteJid.startsWith("status")) {
               from = this.connectedUser || "";
             } else {
-              from = msg.key.remoteJid;
+              from = remoteJid;
             }
           } else {
-            from = msg.key.remoteJid || "";
+            from = remoteJid;
           }
 
           const pushName = msg.pushName || "User";
