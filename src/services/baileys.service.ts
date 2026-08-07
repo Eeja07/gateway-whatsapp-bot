@@ -19,27 +19,70 @@ export type ConnectionStatus = "disconnected" | "connecting" | "qr_ready" | "con
 // WHITELIST: Only these normalized phone numbers can trigger
 // the bot. Self-chat (connectedUser) is always allowed.
 // Format: country-code + number, no +, no spaces, no dashes.
+// Add more numbers here or manage via ALLOWED_SENDERS env var.
 // ============================================================
-const ALLOWED_SENDERS: Set<string> = new Set([
+const STATIC_ALLOWED: Set<string> = new Set([
   "6287700288297",
   "087700288297",
   "135454796058717", // WhatsApp LID for friend (087700288297)
 ]);
 
+// Also allow phones from ALLOWED_SENDERS env var (comma-separated)
+const envAllowed = (process.env.ALLOWED_SENDERS || "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
+const ALLOWED_SENDERS: Set<string> = new Set([...STATIC_ALLOWED, ...envAllowed]);
+
 /** Normalize a raw JID or phone string to a plain number string */
 function normalizePhone(raw: string): string {
   if (!raw) return "";
-  // 1. Take part before @
   let base = raw.split("@")[0];
-  // 2. Strip device index after : or . (e.g. 6287700288297:4 -> 6287700288297)
   base = base.split(":")[0].split(".")[0];
-  // 3. Keep digits only
   let cleaned = base.replace(/\D/g, "");
-  // 4. Convert leading 0 → 62 (Indonesian)
   if (cleaned.startsWith("0")) {
     cleaned = "62" + cleaned.slice(1);
   }
   return cleaned;
+}
+
+/**
+ * Broadcasts an incoming WA command to ALL registered webhook URLs (fan-out).
+ * Each project (job-tracker, finance-tracker, ...) independently receives and
+ * handles the command through their own webhook handler. Failures on one URL
+ * do NOT block delivery to other URLs.
+ */
+async function broadcastToWebhooks(payload: {
+  from: string;
+  body: string;
+  pushName: string;
+  timestamp: any;
+}): Promise<void> {
+  const { webhookUrls, apiKey } = config;
+  if (!webhookUrls || webhookUrls.length === 0) return;
+
+  logger.info(
+    `Broadcasting WA command "${payload.body}" from ${payload.from} to ${webhookUrls.length} webhook(s)`
+  );
+
+  const deliveries = webhookUrls.map((url) =>
+    fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-API-KEY": apiKey,
+        "User-Agent": "Mozilla/5.0 (WhatsAppGateway/1.0)",
+      },
+      body: JSON.stringify(payload),
+    })
+      .then(async (res) => {
+        const text = await res.text().catch(() => "");
+        logger.info(`Webhook [${url}] responded ${res.status}: ${text.slice(0, 120)}`);
+      })
+      .catch((e) => logger.error(`Webhook dispatch error for [${url}]: ${e.message}`))
+  );
+
+  await Promise.allSettled(deliveries);
 }
 
 class BaileysService {
@@ -64,6 +107,9 @@ class BaileysService {
     if (this.isInitializing) return;
     this.isInitializing = true;
     this.status = "connecting";
+
+    logger.info(`Gateway will broadcast to ${config.webhookUrls.length} webhook(s):`);
+    config.webhookUrls.forEach((u, i) => logger.info(`  [${i + 1}] ${u}`));
 
     try {
       const sessionPath = path.resolve(config.sessionDir);
@@ -90,13 +136,13 @@ class BaileysService {
           if (key?.id && this.messageStore.has(key.id)) {
             return this.messageStore.get(key.id);
           }
-          return { conversation: "Job Tracker Bot Notification" };
+          return { conversation: "WhatsApp Gateway Notification" };
         },
       });
 
       this.sock.ev.on("creds.update", saveCreds);
 
-      // Listen for incoming messages and dispatch to webhook URL
+      // Listen for incoming messages and fan-out to all webhook URLs
       this.sock.ev.on("messages.upsert", async (m) => {
         if (m.type !== "notify") return;
         for (const msg of m.messages) {
@@ -121,27 +167,28 @@ class BaileysService {
           ).trim();
 
           const isCommand = text.startsWith("!");
-
-          // Only process explicit bot commands
           if (!isCommand) continue;
 
           const remoteJid = msg.key.remoteJid || "";
-          const isStatusBroadcast = remoteJid.startsWith("status@") || remoteJid.includes("broadcast");
+          const isStatusBroadcast =
+            remoteJid.startsWith("status@") || remoteJid.includes("broadcast");
           if (isStatusBroadcast) continue;
 
           // ── WHITELIST CHECK ──────────────────────────────────
-          // For self-sent messages: sender is always the connected user → allowed.
-          // For incoming messages: only allow if the sender's phone is in ALLOWED_SENDERS.
-          const senderJid = msg.key.participant || remoteJid; // participant = sender in groups
+          const senderJid = msg.key.participant || remoteJid;
           const senderPhone = normalizePhone(senderJid);
           const connectedPhone = this.connectedUser ? normalizePhone(this.connectedUser) : "";
 
           if (!msg.key.fromMe) {
             const isOwner = connectedPhone && senderPhone === connectedPhone;
-            const isAllowed = ALLOWED_SENDERS.has(senderPhone) || ALLOWED_SENDERS.has(normalizePhone(senderPhone));
-            logger.info(`Received WA command "${text}" from senderJid: ${senderJid} (normalized: ${senderPhone}, fromMe: ${msg.key.fromMe}, isAllowed: ${isAllowed})`);
+            const isAllowed =
+              ALLOWED_SENDERS.has(senderPhone) ||
+              ALLOWED_SENDERS.has(normalizePhone(senderPhone));
+            logger.info(
+              `Received WA command "${text}" from ${senderJid} (normalized: ${senderPhone}, fromMe: ${msg.key.fromMe}, isAllowed: ${isAllowed})`
+            );
             if (!isOwner && !isAllowed) {
-              logger.warn(`Blocked command from unauthorized sender: ${senderPhone} (raw: ${senderJid})`);
+              logger.warn(`Blocked command from unauthorized sender: ${senderPhone}`);
               continue;
             }
           }
@@ -159,23 +206,13 @@ class BaileysService {
 
           const pushName = msg.pushName || "User";
 
-          if (text && config.webhookUrl) {
-            logger.info(`Dispatching WA message from ${from} (fromMe: ${msg.key.fromMe}): ${text}`);
-            fetch(config.webhookUrl, {
-              method: "POST",
-              headers: {
-                "Content-Type": "application/json",
-                "X-API-KEY": config.apiKey,
-                "User-Agent": "Mozilla/5.0 (WhatsAppGateway/1.0)",
-              },
-              body: JSON.stringify({
-                from,
-                body: text,
-                pushName,
-                timestamp: msg.messageTimestamp,
-              }),
-            }).catch((e) => logger.error("Webhook dispatch error:", e));
-          }
+          // Fan-out to all registered project webhooks
+          await broadcastToWebhooks({
+            from,
+            body: text,
+            pushName,
+            timestamp: msg.messageTimestamp,
+          });
         }
       });
 
@@ -186,7 +223,7 @@ class BaileysService {
           this.qrCodeStr = qr;
           this.status = "qr_ready";
           this.qrDataUrl = await QRCode.toDataURL(qr);
-          logger.warn("QR Code generated. Please scan QR Code below or visit /qr in browser:");
+          logger.warn("QR Code generated. Scan at /qr or check dashboard.");
           qrcodeTerminal.generate(qr, { small: true });
         }
 
@@ -196,25 +233,30 @@ class BaileysService {
           this.status = "disconnected";
 
           if (reason === DisconnectReason.loggedOut) {
-            logger.error("WhatsApp session logged out. Closing socket, clearing session, then restarting...");
-            // Close socket first to release file handles before we try to delete the session folder
-            try { this.sock?.end(undefined); } catch (_) {}
+            logger.error("WhatsApp session logged out. Clearing session and restarting...");
+            try {
+              this.sock?.end(undefined);
+            } catch (_) {}
             this.sock = null;
-            // Wait for OS to release file handles, then clear and reinit
             setTimeout(async () => {
               await this.clearSession().catch((e) => logger.error("clearSession error:", e));
               setTimeout(() => this.init(), 1000);
             }, 2000);
           } else {
-            logger.warn(`Connection closed due to reason: ${reason}. Reconnecting in 3s...`);
+            logger.warn(`Connection closed (reason: ${reason}). Reconnecting in 3s...`);
             setTimeout(() => this.init(), 3000);
           }
         } else if (connection === "open") {
           this.status = "connected";
           this.qrCodeStr = null;
           this.qrDataUrl = null;
-          this.connectedUser = this.sock?.user?.id ? this.sock.user.id.split(":")[0] : "Connected User";
-          logger.info(`✅ WhatsApp Gateway successfully connected! User: ${this.connectedUser}`);
+          this.connectedUser = this.sock?.user?.id
+            ? this.sock.user.id.split(":")[0]
+            : "Connected User";
+          logger.info(`✅ WhatsApp Gateway connected! User: ${this.connectedUser}`);
+          logger.info(
+            `📡 Broadcasting to ${config.webhookUrls.length} project(s): ${config.webhookUrls.join(", ")}`
+          );
         }
       });
     } catch (err: any) {
@@ -230,6 +272,8 @@ class BaileysService {
       status: this.status,
       connectedUser: this.connectedUser,
       hasQr: !!this.qrDataUrl,
+      webhookCount: config.webhookUrls.length,
+      webhookUrls: config.webhookUrls,
     };
   }
 
@@ -238,7 +282,11 @@ class BaileysService {
   }
 
   public formatJid(phone: string): string {
-    if (phone.includes("@s.whatsapp.net") || phone.includes("@g.us") || phone.includes("@lid")) {
+    if (
+      phone.includes("@s.whatsapp.net") ||
+      phone.includes("@g.us") ||
+      phone.includes("@lid")
+    ) {
       return phone;
     }
     let cleaned = phone.replace(/\D/g, "");
@@ -248,7 +296,10 @@ class BaileysService {
     return `${cleaned}@s.whatsapp.net`;
   }
 
-  public async sendMessage(to: string, message: string): Promise<{ success: boolean; jid: string; messageId?: string }> {
+  public async sendMessage(
+    to: string,
+    message: string
+  ): Promise<{ success: boolean; jid: string; messageId?: string }> {
     if (this.status !== "connected" || !this.sock) {
       throw new Error("WhatsApp Gateway is not connected. Please scan QR Code first.");
     }
@@ -267,7 +318,10 @@ class BaileysService {
     };
   }
 
-  public async sendBulk(items: Array<{ to: string; message: string }>, delayMs = 1000): Promise<Array<{ to: string; success: boolean; error?: string }>> {
+  public async sendBulk(
+    items: Array<{ to: string; message: string }>,
+    delayMs = 1000
+  ): Promise<Array<{ to: string; success: boolean; error?: string }>> {
     const results = [];
     for (const item of items) {
       try {
@@ -304,8 +358,6 @@ class BaileysService {
     const sessionPath = path.resolve(config.sessionDir);
     try {
       if (!fs.existsSync(sessionPath)) return;
-      // Delete contents inside the folder, not the folder itself.
-      // Baileys holds a lock on the folder, so rmdir fails with EBUSY.
       const entries = await fs.promises.readdir(sessionPath);
       await Promise.all(
         entries.map((entry) =>
