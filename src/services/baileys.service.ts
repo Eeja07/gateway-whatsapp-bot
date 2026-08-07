@@ -23,6 +23,7 @@ export type ConnectionStatus = "disconnected" | "connecting" | "qr_ready" | "con
 const ALLOWED_SENDERS: Set<string> = new Set([
   "6287700288297",
   "087700288297",
+  "135454796058717", // WhatsApp LID for friend (087700288297)
 ]);
 
 /** Normalize a raw JID or phone string to a plain number string */
