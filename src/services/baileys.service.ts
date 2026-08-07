@@ -21,15 +21,24 @@ export type ConnectionStatus = "disconnected" | "connecting" | "qr_ready" | "con
 // Format: country-code + number, no +, no spaces, no dashes.
 // ============================================================
 const ALLOWED_SENDERS: Set<string> = new Set([
-  "6287700288297", // nomor teman yang diizinkan
+  "6287700288297",
+  "087700288297",
 ]);
 
 /** Normalize a raw JID or phone string to a plain number string */
 function normalizePhone(raw: string): string {
-  // Strip @s.whatsapp.net, @g.us, @lid etc.
-  const base = raw.split("@")[0].replace(/\D/g, "");
-  // Convert leading 0 → 62 (Indonesian)
-  return base.startsWith("0") ? "62" + base.slice(1) : base;
+  if (!raw) return "";
+  // 1. Take part before @
+  let base = raw.split("@")[0];
+  // 2. Strip device index after : or . (e.g. 6287700288297:4 -> 6287700288297)
+  base = base.split(":")[0].split(".")[0];
+  // 3. Keep digits only
+  let cleaned = base.replace(/\D/g, "");
+  // 4. Convert leading 0 → 62 (Indonesian)
+  if (cleaned.startsWith("0")) {
+    cleaned = "62" + cleaned.slice(1);
+  }
+  return cleaned;
 }
 
 class BaileysService {
@@ -122,14 +131,16 @@ class BaileysService {
           // ── WHITELIST CHECK ──────────────────────────────────
           // For self-sent messages: sender is always the connected user → allowed.
           // For incoming messages: only allow if the sender's phone is in ALLOWED_SENDERS.
+          const senderJid = msg.key.participant || remoteJid; // participant = sender in groups
+          const senderPhone = normalizePhone(senderJid);
+          const connectedPhone = this.connectedUser ? normalizePhone(this.connectedUser) : "";
+
           if (!msg.key.fromMe) {
-            const senderJid = msg.key.participant || remoteJid; // participant = sender in groups
-            const senderPhone = normalizePhone(senderJid);
-            const connectedPhone = this.connectedUser ? normalizePhone(this.connectedUser) : "";
             const isOwner = connectedPhone && senderPhone === connectedPhone;
-            const isAllowed = ALLOWED_SENDERS.has(senderPhone);
+            const isAllowed = ALLOWED_SENDERS.has(senderPhone) || ALLOWED_SENDERS.has(normalizePhone(senderPhone));
+            logger.info(`Received WA command "${text}" from senderJid: ${senderJid} (normalized: ${senderPhone}, fromMe: ${msg.key.fromMe}, isAllowed: ${isAllowed})`);
             if (!isOwner && !isAllowed) {
-              logger.debug(`Blocked command from unauthorized sender: ${senderPhone}`);
+              logger.warn(`Blocked command from unauthorized sender: ${senderPhone} (raw: ${senderJid})`);
               continue;
             }
           }
