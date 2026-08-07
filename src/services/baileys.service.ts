@@ -291,13 +291,18 @@ class BaileysService {
   private async clearSession(): Promise<void> {
     const sessionPath = path.resolve(config.sessionDir);
     try {
-      if (fs.existsSync(sessionPath)) {
-        await fs.promises.rm(sessionPath, { recursive: true, force: true });
-        logger.info("Session directory cleared.");
-      }
+      if (!fs.existsSync(sessionPath)) return;
+      // Delete contents inside the folder, not the folder itself.
+      // Baileys holds a lock on the folder, so rmdir fails with EBUSY.
+      const entries = await fs.promises.readdir(sessionPath);
+      await Promise.all(
+        entries.map((entry) =>
+          fs.promises.rm(path.join(sessionPath, entry), { recursive: true, force: true })
+        )
+      );
+      logger.info("Session files cleared (folder kept to avoid EBUSY).");
     } catch (e: any) {
-      // Log but don't crash — OS may still hold file handles briefly
-      logger.warn(`clearSession: could not remove ${sessionPath}: ${e.message}`);
+      logger.warn(`clearSession: ${e.message}`);
     }
   }
 }
