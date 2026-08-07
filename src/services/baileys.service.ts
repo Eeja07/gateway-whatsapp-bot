@@ -15,6 +15,23 @@ import { logger } from "../utils/logger";
 
 export type ConnectionStatus = "disconnected" | "connecting" | "qr_ready" | "connected";
 
+// ============================================================
+// WHITELIST: Only these normalized phone numbers can trigger
+// the bot. Self-chat (connectedUser) is always allowed.
+// Format: country-code + number, no +, no spaces, no dashes.
+// ============================================================
+const ALLOWED_SENDERS: Set<string> = new Set([
+  "6287700288297", // nomor teman yang diizinkan
+]);
+
+/** Normalize a raw JID or phone string to a plain number string */
+function normalizePhone(raw: string): string {
+  // Strip @s.whatsapp.net, @g.us, @lid etc.
+  const base = raw.split("@")[0].replace(/\D/g, "");
+  // Convert leading 0 → 62 (Indonesian)
+  return base.startsWith("0") ? "62" + base.slice(1) : base;
+}
+
 class BaileysService {
   private sock: WASocket | null = null;
   private qrCodeStr: string | null = null;
@@ -95,23 +112,26 @@ class BaileysService {
 
           const isCommand = text.startsWith("!");
 
-          // CRITICAL: Only process messages that are explicit bot commands (start with !)
-          // This prevents the bot from responding to regular conversation in groups or DMs
+          // Only process explicit bot commands
           if (!isCommand) continue;
 
-          // Skip group messages where bot was not explicitly @-mentioned via command
-          // We still allow group commands (e.g. someone typing !overview in a group)
           const remoteJid = msg.key.remoteJid || "";
-          const isGroup = remoteJid.endsWith("@g.us");
           const isStatusBroadcast = remoteJid.startsWith("status@") || remoteJid.includes("broadcast");
-
-          // Skip status broadcasts entirely
           if (isStatusBroadcast) continue;
 
-          // For self-sent messages in groups: allow if command
-          if (msg.key.fromMe && isGroup) {
-            // Only bot owner can trigger commands in groups
-            // OK to forward to webhook
+          // ── WHITELIST CHECK ──────────────────────────────────
+          // For self-sent messages: sender is always the connected user → allowed.
+          // For incoming messages: only allow if the sender's phone is in ALLOWED_SENDERS.
+          if (!msg.key.fromMe) {
+            const senderJid = msg.key.participant || remoteJid; // participant = sender in groups
+            const senderPhone = normalizePhone(senderJid);
+            const connectedPhone = this.connectedUser ? normalizePhone(this.connectedUser) : "";
+            const isOwner = connectedPhone && senderPhone === connectedPhone;
+            const isAllowed = ALLOWED_SENDERS.has(senderPhone);
+            if (!isOwner && !isAllowed) {
+              logger.debug(`Blocked command from unauthorized sender: ${senderPhone}`);
+              continue;
+            }
           }
 
           let from = "";
