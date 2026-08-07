@@ -184,9 +184,9 @@ class BaileysService {
           this.status = "disconnected";
 
           if (reason === DisconnectReason.loggedOut) {
-            logger.error("WhatsApp session logged out. Clearing sessions directory...");
-            this.clearSession();
-            setTimeout(() => this.init(), 2000);
+            logger.error("WhatsApp session logged out. Clearing sessions and restarting...");
+            this.clearSession().catch((e) => logger.error("clearSession error:", e));
+            setTimeout(() => this.init(), 3000);
           } else {
             logger.warn(`Connection closed due to reason: ${reason}. Reconnecting in 3s...`);
             setTimeout(() => this.init(), 3000);
@@ -273,19 +273,25 @@ class BaileysService {
     } catch (e) {
       logger.error("Logout error:", e);
     } finally {
-      this.clearSession();
+      await this.clearSession().catch((e) => logger.error("clearSession error:", e));
       this.status = "disconnected";
       this.connectedUser = null;
       this.qrCodeStr = null;
       this.qrDataUrl = null;
-      setTimeout(() => this.init(), 2000);
+      setTimeout(() => this.init(), 3000);
     }
   }
 
-  private clearSession(): void {
+  private async clearSession(): Promise<void> {
     const sessionPath = path.resolve(config.sessionDir);
-    if (fs.existsSync(sessionPath)) {
-      fs.rmSync(sessionPath, { recursive: true, force: true });
+    try {
+      if (fs.existsSync(sessionPath)) {
+        await fs.promises.rm(sessionPath, { recursive: true, force: true });
+        logger.info("Session directory cleared.");
+      }
+    } catch (e: any) {
+      // Log but don't crash — OS may still hold file handles briefly
+      logger.warn(`clearSession: could not remove ${sessionPath}: ${e.message}`);
     }
   }
 }
