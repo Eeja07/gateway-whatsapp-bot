@@ -3,6 +3,8 @@ import makeWASocket, {
   DisconnectReason,
   fetchLatestBaileysVersion,
   makeCacheableSignalKeyStore,
+  generateWAMessageFromContent,
+  proto,
   type WASocket,
 } from "@whiskeysockets/baileys";
 import { Boom } from "@hapi/boom";
@@ -21,7 +23,22 @@ export type ConnectionStatus = "disconnected" | "connecting" | "qr_ready" | "con
 // Format: country-code + number, no +, no spaces, no dashes.
 // Add more numbers here or manage via ALLOWED_SENDERS env var.
 // ============================================================
+const LID_MAP: Record<string, string> = {
+  "277141539291377": "6281288092766",
+  "135454796058717": "6287700288297",
+};
+
+const PHONE_TO_LID_MAP: Record<string, string> = {
+  "6281288092766": "277141539291377@lid",
+  "081288092766": "277141539291377@lid",
+  "6287700288297": "135454796058717@lid",
+  "087700288297": "135454796058717@lid",
+};
+
 const STATIC_ALLOWED: Set<string> = new Set([
+  "6281288092766",
+  "081288092766",
+  "277141539291377", // WhatsApp LID for user (081288092766)
   "6287700288297",
   "087700288297",
   "135454796058717", // WhatsApp LID for friend (087700288297)
@@ -30,7 +47,7 @@ const STATIC_ALLOWED: Set<string> = new Set([
 // Also allow phones from ALLOWED_SENDERS env var (comma-separated)
 const envAllowed = (process.env.ALLOWED_SENDERS || "")
   .split(",")
-  .map((s) => s.trim())
+  .map((s) => normalizePhone(s.trim()))
   .filter(Boolean);
 const ALLOWED_SENDERS: Set<string> = new Set([...STATIC_ALLOWED, ...envAllowed]);
 
@@ -92,7 +109,11 @@ class BaileysService {
   private status: ConnectionStatus = "disconnected";
   private connectedUser: string | null = null;
   private isInitializing = false;
+  private isExplicitLogout = false;
   private messageStore = new Map<string, any>();
+  private lastIncomingMsgMap = new Map<string, any>();
+  // Maps phone number (e.g. "6281288092766") -> phone JID for reply routing
+  private senderPhoneJidMap = new Map<string, string>();
 
   private saveToMessageStore(id?: string | null, message?: any) {
     if (!id || !message) return;
@@ -106,6 +127,7 @@ class BaileysService {
   public async init(): Promise<void> {
     if (this.isInitializing) return;
     this.isInitializing = true;
+    this.isExplicitLogout = false;
     this.status = "connecting";
 
     logger.info(`Gateway will broadcast to ${config.webhookUrls.length} webhook(s):`);
@@ -131,7 +153,11 @@ class BaileysService {
         },
         printQRInTerminal: false,
         syncFullHistory: false,
+        shouldSyncHistoryMessage: () => true,
         markOnlineOnConnect: true,
+        generateHighQualityLinkPreview: false,
+        retryRequestDelayMs: 250,
+        maxMsgRetryCount: 5,
         getMessage: async (key) => {
           if (key?.id && this.messageStore.has(key.id)) {
             return this.messageStore.get(key.id);
@@ -157,7 +183,20 @@ class BaileysService {
           if (rawMsg.viewOnceMessage?.message) rawMsg = rawMsg.viewOnceMessage.message;
           if (rawMsg.viewOnceMessageV2?.message) rawMsg = rawMsg.viewOnceMessageV2.message;
 
-          const text = (
+          let buttonId = "";
+          if (rawMsg.interactiveResponseMessage?.nativeFlowResponseMessage?.paramsJson) {
+            try {
+              const parsed = JSON.parse(rawMsg.interactiveResponseMessage.nativeFlowResponseMessage.paramsJson);
+              if (parsed?.id) buttonId = parsed.id;
+            } catch (e) {}
+          } else if (rawMsg.buttonsResponseMessage?.selectedButtonId) {
+            buttonId = rawMsg.buttonsResponseMessage.selectedButtonId;
+          } else if (rawMsg.templateButtonReplyMessage?.selectedId) {
+            buttonId = rawMsg.templateButtonReplyMessage.selectedId;
+          }
+
+          let text = (
+            buttonId ||
             rawMsg.conversation ||
             rawMsg.extendedTextMessage?.text ||
             rawMsg.imageMessage?.caption ||
@@ -166,13 +205,13 @@ class BaileysService {
             ""
           ).trim();
 
-          const isCommand = text.startsWith("!");
-          if (!isCommand) continue;
+          const lowerText = text.toLowerCase().trim();
 
           const remoteJid = msg.key.remoteJid || "";
           const isStatusBroadcast =
             remoteJid.startsWith("status@") || remoteJid.includes("broadcast");
           if (isStatusBroadcast) continue;
+          const isGroupChat = remoteJid.endsWith("@g.us");
 
           // ── WHITELIST CHECK ──────────────────────────────────
           const senderJid = msg.key.participant || remoteJid;
@@ -181,11 +220,13 @@ class BaileysService {
 
           if (!msg.key.fromMe) {
             const isOwner = connectedPhone && senderPhone === connectedPhone;
+            const isDirectChat = !isGroupChat;
             const isAllowed =
+              isDirectChat ||
               ALLOWED_SENDERS.has(senderPhone) ||
               ALLOWED_SENDERS.has(normalizePhone(senderPhone));
             logger.info(
-              `Received WA command "${text}" from ${senderJid} (normalized: ${senderPhone}, fromMe: ${msg.key.fromMe}, isAllowed: ${isAllowed})`
+              `Received WA command "${text}" from ${senderJid} (normalized: ${senderPhone}, fromMe: ${msg.key.fromMe}, isDirectChat: ${isDirectChat}, isAllowed: ${isAllowed})`
             );
             if (!isOwner && !isAllowed) {
               logger.warn(`Blocked command from unauthorized sender: ${senderPhone}`);
@@ -193,15 +234,86 @@ class BaileysService {
             }
           }
 
+          // Resolve sender to a clean phone JID (@s.whatsapp.net)
+          // fromMe=true means bot sent the message, the remote is the recipient
+          // fromMe=false means another person sent a message to the bot
           let from = "";
           if (msg.key.fromMe) {
-            if (!remoteJid || remoteJid.endsWith("@lid") || remoteJid.startsWith("status")) {
-              from = this.connectedUser || "";
-            } else {
-              from = remoteJid;
-            }
+            // bot typed to itself or to a contact — use remoteJid as the "from" so webhook
+            // sees the bot number, not the recipient
+            from = this.connectedUser ? `${this.connectedUser}@s.whatsapp.net` : "";
           } else {
-            from = remoteJid;
+            // Message came from someone else — senderJid may be a LID, resolve to phone
+            const resolvedPhone = LID_MAP[senderPhone] || senderPhone;
+            from = `${resolvedPhone}@s.whatsapp.net`;
+
+            // Save mapping: phone -> actual remoteJid/senderJid so reply can target correct JID (LID or phone)
+            if (remoteJid) {
+              this.senderPhoneJidMap.set(resolvedPhone, remoteJid);
+              this.senderPhoneJidMap.set(senderPhone, remoteJid);
+            }
+
+            // Save incoming message for quoted reply lookup
+            if (remoteJid) this.lastIncomingMsgMap.set(remoteJid, msg);
+            if (senderJid) this.lastIncomingMsgMap.set(senderJid, msg);
+            if (senderPhone) this.lastIncomingMsgMap.set(senderPhone, msg);
+            if (from) this.lastIncomingMsgMap.set(from, msg);
+          }
+
+          const senderCleanPhone = normalizePhone(senderJid);
+          const resolvedSenderPhone = LID_MAP[senderCleanPhone] || senderCleanPhone;
+          const isAdminUser = resolvedSenderPhone === "6281288092766" || senderCleanPhone === "6281288092766";
+
+          // Handle single digit number shortcuts (1, 2, 3, 4, 5, 6, 7)
+          if (/^[1-7]$/.test(lowerText)) {
+            if (isAdminUser) {
+              const numberMap: Record<string, string> = {
+                "1": "!loker",
+                "2": "!email",
+                "3": "!job",
+                "4": "!saldo",
+                "5": "!cicilan",
+                "6": "!hariini",
+                "7": "!tambah",
+              };
+              text = numberMap[lowerText] || text;
+            } else {
+              const numberMap: Record<string, string> = {
+                "1": "!saldo",
+                "2": "!cicilan",
+                "3": "!hariini",
+                "4": "!tambah",
+              };
+              text = numberMap[lowerText] || text;
+            }
+          }
+
+          const currentLower = text.toLowerCase().trim();
+          const isCommand =
+            text.startsWith("!") ||
+            text.startsWith("/") ||
+            currentLower === "start" ||
+            currentLower === "menu";
+          if (!isCommand) continue;
+
+          // Handle /start or !start or start or menu centrally
+          if (
+            currentLower === "/start" ||
+            currentLower === "!start" ||
+            currentLower === "start" ||
+            currentLower === "menu" ||
+            currentLower === "/menu" ||
+            currentLower === "!menu"
+          ) {
+            let menuText = "";
+            if (isAdminUser) {
+              menuText = `🤖 *CENTRAL AUTOMATION BOT MENU*\nHalo Mahija! Balas dengan *ANGKA (1-7)* untuk memilih:\n\n💼 *JOB TRACKER*\n*[1]* !loker   ➔ Status Lamaran & Loker\n*[2]* !email   ➔ Balasan HRD Terakhir\n*[3]* !job     ➔ Summary Status Lamaran\n\n💰 *FINANCE TRACKER*\n*[4]* !saldo   ➔ Ringkasan Saldo & Dompet\n*[5]* !cicilan ➔ Tagihan & Cicilan Aktif\n*[6]* !hariini ➔ Pengeluaran Hari Ini\n*[7]* !tambah ➔ Catat Transaksi Baru\n\n💡 *Tips:* Cukup ketik angka *1*, *2*, *3*, *4*, *5*, *6*, atau *7*!`;
+            } else {
+              menuText = `🌸 *FINANCE TRACKER BOT MENU*\nHalo Salma! Balas dengan *ANGKA (1-4)* untuk memilih:\n\n💰 *KEUANGAN SAYA*\n*[1]* !saldo   ➔ Ringkasan Saldo & Dompet\n*[2]* !cicilan ➔ Tagihan & Cicilan Aktif\n*[3]* !hariini ➔ Pengeluaran Hari Ini\n*[4]* !tambah ➔ Catat Transaksi Baru\n\n💡 *Tips:* Cukup ketik angka *1*, *2*, *3*, atau *4*!`;
+            }
+
+            await this.sendMessage(from, menuText);
+            continue;
           }
 
           const pushName = msg.pushName || "User";
@@ -222,22 +334,42 @@ class BaileysService {
         if (qr) {
           this.qrCodeStr = qr;
           this.status = "qr_ready";
-          this.qrDataUrl = await QRCode.toDataURL(qr);
+          this.qrDataUrl = await QRCode.toDataURL(qr, {
+            margin: 2,
+            width: 400,
+            errorCorrectionLevel: "M",
+            color: {
+              dark: "#000000",
+              light: "#FFFFFF",
+            },
+          });
           logger.warn("QR Code generated. Scan at /qr or check dashboard.");
           qrcodeTerminal.generate(qr, { small: true });
         }
 
         if (connection === "close") {
+          this.isInitializing = false;
+          if (this.sock) {
+            try {
+              this.sock.ev.removeAllListeners("connection.update");
+              this.sock.ev.removeAllListeners("messages.upsert");
+              this.sock.ev.removeAllListeners("creds.update");
+              this.sock.end(undefined);
+            } catch (_) {}
+            this.sock = null;
+          }
+
+          if (this.isExplicitLogout) {
+            logger.info("Connection closed due to explicit logout request. Auto-reconnect skipped.");
+            return;
+          }
+
           const reason = (lastDisconnect?.error as Boom)?.output?.statusCode;
           this.connectedUser = null;
           this.status = "disconnected";
 
           if (reason === DisconnectReason.loggedOut) {
             logger.error("WhatsApp session logged out. Clearing session and restarting...");
-            try {
-              this.sock?.end(undefined);
-            } catch (_) {}
-            this.sock = null;
             setTimeout(async () => {
               await this.clearSession().catch((e) => logger.error("clearSession error:", e));
               setTimeout(() => this.init(), 1000);
@@ -272,6 +404,7 @@ class BaileysService {
       status: this.status,
       connectedUser: this.connectedUser,
       hasQr: !!this.qrDataUrl,
+      qrDataUrl: this.qrDataUrl,
       webhookCount: config.webhookUrls.length,
       webhookUrls: config.webhookUrls,
     };
@@ -282,30 +415,80 @@ class BaileysService {
   }
 
   public formatJid(phone: string): string {
-    if (
-      phone.includes("@s.whatsapp.net") ||
-      phone.includes("@g.us") ||
-      phone.includes("@lid")
-    ) {
-      return phone;
+    if (!phone) return "";
+    let target = phone.trim();
+
+    if (target.includes("@g.us") || target.includes("@s.whatsapp.net")) {
+      return target;
     }
-    let cleaned = phone.replace(/\D/g, "");
-    if (cleaned.startsWith("0")) {
+
+    if (target.includes("@lid")) {
+      const lidNum = target.split("@")[0].split(":")[0];
+      if (LID_MAP[lidNum]) {
+        return `${LID_MAP[lidNum]}@s.whatsapp.net`;
+      }
+    }
+
+    let cleaned = target.split("@")[0].replace(/\D/g, "");
+    if (LID_MAP[cleaned]) {
+      cleaned = LID_MAP[cleaned];
+    } else if (cleaned.startsWith("0")) {
       cleaned = "62" + cleaned.slice(1);
     }
+
     return `${cleaned}@s.whatsapp.net`;
+  }
+
+  public async resolveJid(phone: string): Promise<string> {
+    if (!phone) return "";
+    return this.formatJid(phone);
   }
 
   public async sendMessage(
     to: string,
-    message: string
+    message: string | any
   ): Promise<{ success: boolean; jid: string; messageId?: string }> {
     if (this.status !== "connected" || !this.sock) {
       throw new Error("WhatsApp Gateway is not connected. Please scan QR Code first.");
     }
 
-    const jid = this.formatJid(to);
-    const sent = await this.sock.sendMessage(jid, { text: message });
+    const cleanPhone = normalizePhone(to);
+    const resolvedPhone = LID_MAP[cleanPhone] || cleanPhone;
+    const phoneJid = `${resolvedPhone}@s.whatsapp.net`;
+    const mappedJid = this.senderPhoneJidMap.get(cleanPhone) || this.senderPhoneJidMap.get(resolvedPhone);
+    const lidJid = mappedJid || PHONE_TO_LID_MAP[cleanPhone] || PHONE_TO_LID_MAP[resolvedPhone];
+
+    // If lidJid is available, try lidJid first to avoid error 463 on privacy accounts
+    const targetsToTry: string[] = [];
+    if (lidJid && lidJid.endsWith("@lid")) {
+      targetsToTry.push(lidJid);
+    }
+    if (!targetsToTry.includes(phoneJid)) {
+      targetsToTry.push(phoneJid);
+    }
+
+    let sent: any;
+    let successfulJid = phoneJid;
+    let lastError: any;
+
+    for (const targetJid of targetsToTry) {
+      try {
+        const sendPayload = typeof message === "string" ? { text: message } : message;
+        sent = await this.sock.sendMessage(targetJid, sendPayload);
+        if (sent?.key?.id) {
+          successfulJid = targetJid;
+          logger.info(`Message sent successfully to ${targetJid}: ${sent.key.id}`);
+          break;
+        }
+      } catch (err: any) {
+        lastError = err;
+        logger.warn(`sendMessage failed for ${targetJid}: ${err?.message}`);
+      }
+    }
+
+    if (!sent?.key?.id && lastError) {
+      throw lastError;
+    }
 
     if (sent?.key?.id && sent.message) {
       this.saveToMessageStore(sent.key.id, sent.message);
@@ -313,9 +496,19 @@ class BaileysService {
 
     return {
       success: true,
-      jid,
+      jid: successfulJid,
       messageId: sent?.key?.id || undefined,
     };
+  }
+
+  public async sendInteractiveButtons(
+    to: string,
+    bodyText: string,
+    footerText: string,
+    buttons: Array<{ text: string; id: string }>
+  ) {
+    const fullText = `${bodyText}\n\n${footerText}`;
+    return this.sendMessage(to, fullText);
   }
 
   public async sendBulk(
@@ -338,19 +531,31 @@ class BaileysService {
   }
 
   public async logout(): Promise<void> {
+    logger.info("Resetting WhatsApp Gateway session and requesting new QR Code...");
+    this.isExplicitLogout = true;
+    this.status = "connecting";
+    this.connectedUser = null;
+    this.qrCodeStr = null;
+    this.qrDataUrl = null;
+
     try {
       if (this.sock) {
-        await this.sock.logout();
+        try {
+          this.sock.ev.removeAllListeners("connection.update");
+          this.sock.end(undefined);
+        } catch (_) {}
       }
     } catch (e) {
       logger.error("Logout error:", e);
     } finally {
+      this.sock = null;
+      this.isInitializing = false;
+
       await this.clearSession().catch((e) => logger.error("clearSession error:", e));
-      this.status = "disconnected";
-      this.connectedUser = null;
-      this.qrCodeStr = null;
-      this.qrDataUrl = null;
-      setTimeout(() => this.init(), 3000);
+
+      setTimeout(() => {
+        this.init().catch((e) => logger.error("init error after logout:", e));
+      }, 1000);
     }
   }
 
