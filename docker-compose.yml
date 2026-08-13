@@ -3,7 +3,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    container_name: gateway-whatsapp-bot
+    container_name: wa-gateway-bot
     restart: always
     ports:
       - "3001:3001"
@@ -23,7 +23,9 @@ services:
     volumes:
       - wa-sessions-data:/app/sessions
     networks:
-      - homelab
+      homelab:
+        aliases:
+          - gateway-whatsapp-bot
 
 networks:
   homelab:
