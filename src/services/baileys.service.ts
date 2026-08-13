@@ -293,23 +293,80 @@ class BaileysService {
             text.startsWith("!") ||
             text.startsWith("/") ||
             currentLower === "start" ||
-            currentLower === "menu";
+            currentLower === "menu" ||
+            currentLower === "help" ||
+            currentLower.startsWith("menu") ||
+            currentLower.startsWith("help");
           if (!isCommand) continue;
 
-          // Handle /start or !start or start or menu centrally
+          // Handle /start or !start or start or menu or help centrally with complete response
           if (
             currentLower === "/start" ||
             currentLower === "!start" ||
             currentLower === "start" ||
             currentLower === "menu" ||
             currentLower === "/menu" ||
-            currentLower === "!menu"
+            currentLower === "!menu" ||
+            currentLower === "help" ||
+            currentLower === "/help" ||
+            currentLower === "!help" ||
+            currentLower.startsWith("menu") ||
+            currentLower.startsWith("help")
           ) {
             let menuText = "";
             if (isAdminUser) {
-              menuText = `🤖 *CENTRAL AUTOMATION BOT MENU*\nHalo Mahija! Balas dengan *ANGKA (1-7)* untuk memilih:\n\n💼 *JOB TRACKER*\n*[1]* !loker   ➔ Status Lamaran & Loker\n*[2]* !email   ➔ Balasan HRD Terakhir\n*[3]* !job     ➔ Summary Status Lamaran\n\n💰 *FINANCE TRACKER*\n*[4]* !saldo   ➔ Ringkasan Saldo & Dompet\n*[5]* !cicilan ➔ Tagihan & Cicilan Aktif\n*[6]* !hariini ➔ Pengeluaran Hari Ini\n*[7]* !tambah ➔ Catat Transaksi Baru\n\n💡 *Tips:* Cukup ketik angka *1*, *2*, *3*, *4*, *5*, *6*, atau *7*!`;
+              menuText = `🤖 *CENTRAL AUTOMATION BOT MENU & HELP*
+Halo Mahija! Berikut adalah panduan lengkap perintah WhatsApp Bot:
+
+💼 *JOB TRACKER*
+*[1] !loker* / *!lamaran* ➔ Lihat 5 lamaran kerja terbaru
+*[2] !email* / *!balasan* ➔ Lihat 5 email balasan HRD terbaru
+*[3] !job* / *!overview* ➔ Summary status lamaran & stage penolakan
+➕ *!tambah [Judul] | [Perusahaan] | [Status]* ➔ Tambah lamaran kerja
+   _Contoh:_ \`!tambah Backend Dev | Tokopedia | APPLIED\`
+
+💰 *FINANCE TRACKER*
+*[4] !saldo* / *!overview* ➔ Total aset & cashflow bulan ini
+*[5] !cicilan* ➔ Tagihan & cicilan aktif
+*[6] !hariini* / *!pengeluaran* ➔ Rincian pengeluaran hari ini
+• *!dompet* / *!rekening* ➔ Daftar dompet & saldo per akun
+• *!kategori* ➔ Lihat daftar kategori keuangan
+• *!riwayat* / *!transaksi* ➔ Lihat 10 transaksi terakhir
+
+📝 *KELOLA TRANSAKSI FINANCE:*
+*[7]* ➕ *!tambah [pengeluaran/pemasukan] [jumlah] | [kategori] | [deskripsi] | [dompet]*
+   _Contoh:_ \`!tambah pengeluaran 35000 | Makanan | Makan Siang | GoPay\`
+
+✏️ *!edit #no [jumlah] | [kategori] | [deskripsi] | [dompet]*
+   _Contoh:_ \`!edit #1 40000 | Makanan | Makan Siang Komplit\`
+
+❌ *!hapus #no* atau *!hapus [code]*
+   _Contoh:_ \`!hapus #1\`
+
+💡 *Quick Access:* Cukup ketik angka *1* s/d *7* untuk memilih secara cepat!`;
             } else {
-              menuText = `🌸 *FINANCE TRACKER BOT MENU*\nHalo Salma! Balas dengan *ANGKA (1-4)* untuk memilih:\n\n💰 *KEUANGAN SAYA*\n*[1]* !saldo   ➔ Ringkasan Saldo & Dompet\n*[2]* !cicilan ➔ Tagihan & Cicilan Aktif\n*[3]* !hariini ➔ Pengeluaran Hari Ini\n*[4]* !tambah ➔ Catat Transaksi Baru\n\n💡 *Tips:* Cukup ketik angka *1*, *2*, *3*, atau *4*!`;
+              menuText = `🌸 *FINANCE TRACKER BOT MENU & HELP*
+Halo Salma! Berikut adalah panduan lengkap perintah WhatsApp Bot:
+
+📊 *INFORMASI & SALDO*
+*[1] !saldo* / *!overview* ➔ Total aset & cashflow bulan ini
+*[2] !cicilan* ➔ Tagihan & cicilan aktif
+*[3] !hariini* / *!pengeluaran* ➔ Rincian pengeluaran hari ini
+• *!dompet* / *!rekening* ➔ Daftar dompet & saldo per akun
+• *!kategori* ➔ Lihat daftar kategori keuangan
+• *!riwayat* / *!transaksi* ➔ Lihat 10 transaksi terakhir
+
+📝 *KELOLA TRANSAKSI:*
+*[4]* ➕ *!tambah [pengeluaran/pemasukan] [jumlah] | [kategori] | [deskripsi] | [dompet]*
+   _Contoh:_ \`!tambah pengeluaran 35000 | Makanan | Makan Siang | GoPay\`
+
+✏️ *!edit #no [jumlah] | [kategori] | [deskripsi] | [dompet]*
+   _Contoh:_ \`!edit #1 40000 | Makanan | Makan Siang Komplit\`
+
+❌ *!hapus #no* atau *!hapus [code]*
+   _Contoh:_ \`!hapus #1\`
+
+💡 *Quick Access:* Cukup ketik angka *1* s/d *4* untuk memilih secara cepat!`;
             }
 
             await this.sendMessage(from, menuText);
