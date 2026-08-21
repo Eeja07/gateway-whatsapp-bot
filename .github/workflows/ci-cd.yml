@@ -2,13 +2,16 @@ name: CI/CD Pipeline - Central WhatsApp API Gateway
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, master ]
   pull_request:
-    branches: [ main ]
+    branches: [ main, master ]
+  workflow_dispatch:
 
 jobs:
-  build-and-lint:
-    runs-on: ubuntu-latest
+  lint-and-build:
+    name: Test, Lint & Build Verification
+    runs-on: self-hosted
+
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v4
@@ -28,26 +31,44 @@ jobs:
       - name: Build TypeScript
         run: npm run build
 
-  deploy-to-server:
-    needs: build-and-lint
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    runs-on: ubuntu-latest
+  deploy-homelab:
+    name: Deploy to Homelab Container
+    needs: [lint-and-build]
+    if: (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master') && (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+    runs-on: self-hosted
+
     steps:
-      - name: Deploy to Remote Production Server via SSH
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.SERVER_HOST }}
-          username: ${{ secrets.SERVER_USER }}
-          password: ${{ secrets.SERVER_PASS }}
-          script: |
-            mkdir -p /opt/apps/gateway-whatsapp-bot
-            cd /opt/apps/gateway-whatsapp-bot
-            if [ -d ".git" ]; then
-              git fetch origin main
-              git reset --hard origin/main
-            else
-              git clone git@github.com:Eeja07/gateway-whatsapp-bot.git .
-            fi
-            docker compose down || true
-            docker compose build
-            docker compose up -d
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Deploy Docker Service
+        run: |
+          echo "🚀 [CI/CD] Starting Central WhatsApp API Gateway Deployment on Homelab..."
+
+          # 1. Ensure homelab directory hierarchy exists
+          mkdir -p /opt/apps/gateway-whatsapp-bot
+          mkdir -p /opt/homelab/compose/gateway-whatsapp-bot
+
+          # 2. Sync latest source code to /opt/apps/gateway-whatsapp-bot
+          echo "📦 Syncing source code to /opt/apps/gateway-whatsapp-bot..."
+          rsync -a --delete \
+            --exclude '.git' \
+            --exclude 'node_modules' \
+            --exclude 'dist' \
+            --exclude 'sessions' \
+            ./ /opt/apps/gateway-whatsapp-bot/
+
+          # 3. Sync Compose configuration
+          echo "⚙️ Syncing Compose config..."
+          cp docker/compose.yml /opt/homelab/compose/gateway-whatsapp-bot/compose.yml
+
+          # 4. Build and restart Docker container
+          echo "🐳 Building and updating container..."
+          cd /opt/homelab/compose/gateway-whatsapp-bot
+          docker compose up -d --build --remove-orphans
+
+          # 5. Verify container status
+          echo "🔍 Checking container status..."
+          docker ps --filter "name=wa-gateway-bot" --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+
+          echo "✅ [CI/CD] Central WhatsApp Gateway Deployed Successfully on Homelab!"
