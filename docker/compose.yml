@@ -1,7 +1,7 @@
 services:
   gateway-whatsapp-bot:
     build:
-      context: /opt/apps/gateway-whatsapp-bot
+      context: /home/storage/apps/gateway-whatsapp-bot
       dockerfile: Dockerfile
     container_name: wa-gateway-bot
     restart: always

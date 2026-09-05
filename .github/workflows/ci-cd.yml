@@ -47,25 +47,25 @@ jobs:
           echo "🚀 [CI/CD] Starting Central WhatsApp API Gateway Deployment on Homelab..."
 
           # 1. Ensure homelab directory hierarchy exists
-          mkdir -p /opt/apps/gateway-whatsapp-bot
-          mkdir -p /opt/homelab/compose/gateway-whatsapp-bot
+          mkdir -p /home/storage/apps/gateway-whatsapp-bot
+          mkdir -p /home/storage/homelab/compose/gateway-whatsapp-bot
 
-          # 2. Sync latest source code to /opt/apps/gateway-whatsapp-bot
-          echo "📦 Syncing source code to /opt/apps/gateway-whatsapp-bot..."
+          # 2. Sync latest source code to /home/storage/apps/gateway-whatsapp-bot
+          echo "📦 Syncing source code to /home/storage/apps/gateway-whatsapp-bot..."
           rsync -a --delete \
             --exclude '.git' \
             --exclude 'node_modules' \
             --exclude 'dist' \
             --exclude 'sessions' \
-            ./ /opt/apps/gateway-whatsapp-bot/
+            ./ /home/storage/apps/gateway-whatsapp-bot/
 
           # 3. Sync Compose configuration
           echo "⚙️ Syncing Compose config..."
-          cp docker/compose.yml /opt/homelab/compose/gateway-whatsapp-bot/compose.yml
+          cp docker/compose.yml /home/storage/homelab/compose/gateway-whatsapp-bot/compose.yml
 
           # 4. Build and restart Docker container
           echo "🐳 Building and updating container..."
-          cd /opt/homelab/compose/gateway-whatsapp-bot
+          cd /home/storage/homelab/compose/gateway-whatsapp-bot
           docker compose up -d --build --remove-orphans
 
           # 5. Verify container status
